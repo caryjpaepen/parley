@@ -7,6 +7,8 @@ import copy
 import functools
 import typing as t
 import re
+from logger import configure_logger
+import logging
 
 from _types import (
     ChatFunction,
@@ -144,8 +146,12 @@ def attack(
 
 
 def main(args: argparse.Namespace):
+
+    configure_logger()
+    logger = logging.getLogger("parley")
+
     target_chat, evaluator_chat, attacker_chat = load_models(args)
-    print("[+] Loaded models")
+    logger.info("[+] Loaded models")
 
     attacker_system_prompt = get_prompt_for_attacker(args.goal)
     scoring_system_prompt = get_prompt_for_evaluator_score(args.goal)
@@ -166,15 +172,15 @@ def main(args: argparse.Namespace):
 
     current_nodes: t.List[TreeNode] = root_nodes
 
-    print("[+] Beginning TAP ...")
+    logger.info("[+] Beginning TAP ...")
     for iteration in range(args.depth):
-        print(f" |- Iteration {iteration + 1} with {len(current_nodes)} nodes ...")
+        logger.info(f" |- Iteration {iteration + 1} with {len(current_nodes)} nodes ...")
 
         for i, node in enumerate(current_nodes):
             # 1 - Prepare the next conversation step
 
             response_str = (
-                f"{node.response[:300]}..."
+                f"{node.response[:1000]}..."
                 if node.response is not None
                 else "[Ignore, this is your first attempt]"
             )
@@ -195,7 +201,7 @@ def main(args: argparse.Namespace):
             for _ in range(args.branching_factor):
                 feedback = attack(attacker_chat, node.conversation)
                 if feedback is None:
-                    print("  |> Attack generation failed")
+                    logger.info("  |> Attack generation failed")
                     continue
 
                 conversation = copy.deepcopy(node.conversation)
@@ -219,18 +225,18 @@ def main(args: argparse.Namespace):
             for k, child in enumerate(node.children):
                 assert child.feedback is not None
 
-                print(f"  |= {iteration + 1}->{i + 1}->{k + 1}")
-                print(f'   |- Improvement: "{child.feedback.improvement[:100]}"')
-                print(f'   |- Prompt:      "{child.feedback.prompt[:100]}"')
+                logger.info(f"  |= {iteration + 1}->{i + 1}->{k + 1}")
+                logger.info(f'   |- Improvement: "{child.feedback.improvement}"')
+                logger.info(f'   |- Prompt:      "{child.feedback.prompt}"')
 
                 child.on_topic = check_on_topic(
                     on_topic_system_prompt, evaluator_chat, child.feedback.prompt
                 )
                 if not child.on_topic:
-                    print("   |- Off topic.")
+                    logger.info("   |- Off topic.")
                     continue
 
-                print("   |- ON topic ...")
+                logger.info("   |- ON topic ...")
 
                 # Add any additional prompt alterations here
                 prompt = child.feedback.prompt
@@ -249,15 +255,15 @@ def main(args: argparse.Namespace):
                     child.response,
                 )
 
-                print(f'   |- Response:    "{child.response[:100]}"')
-                print(f"   |- Score:       {child.score}")
+                logger.info(f'   |- Response:    "{child.response}"')
+                logger.info(f"   |- Score:       {child.score}")
                 
                 if child.score >= args.stop_score:
-                    print()
-                    print("[+] Found a good attack!")
-                    print(f" |- Prompt: {child.feedback.prompt}")
-                    print(f" |- Response: {child.response}")
-                    print()
+                    logger.info()
+                    logger.info("[+] Found a good attack!")
+                    logger.info(f" |- Prompt: {child.feedback.prompt}")
+                    logger.info(f" |- Response: {child.response}")
+                    logger.info()
                     return
 
         # 4 - Prune the tree and step down
@@ -273,11 +279,10 @@ def main(args: argparse.Namespace):
         current_nodes = children[: args.width]
 
         if len(current_nodes) == 0:
-            print()
-            print("[!] No more nodes to explore")
-            print()
+            logger.info()
+            logger.info("[!] No more nodes to explore")
+            logger.info()
             return
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -330,4 +335,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
-    print()
+    logger.info()
