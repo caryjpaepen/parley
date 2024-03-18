@@ -9,6 +9,8 @@ import typing as t
 import re
 from logger import configure_logger
 import logging
+from prometheus_client import start_http_server, Counter, Gauge
+import time
 
 from _types import (
     ChatFunction,
@@ -29,8 +31,7 @@ from prompts import (
 
 Models: t.Dict[str, t.Tuple] = {
     "gpt-3.5": (chat_openai, "gpt-3.5-turbo"),
-    "gpt-4": (chat_openai, "gpt-4"),
-    "gpt-4-turbo": (chat_openai, "gpt-4-1106-preview"),
+    "gpt-4": (chat_openai, "gpt-4-0125-preview"),
     "llama-13b": (chat_together, "togethercomputer/llama-2-13b-chat"),
     "llama-70b": (chat_together, "togethercomputer/llama-2-70b-chat"),
     "vicuna-13b": (chat_together, "lmsys/vicuna-13b-v1.5"),
@@ -147,7 +148,6 @@ def attack(
 
 def main(args: argparse.Namespace):
 
-    configure_logger()
     logger = logging.getLogger("parley")
 
     target_chat, evaluator_chat, attacker_chat = load_models(args)
@@ -173,7 +173,10 @@ def main(args: argparse.Namespace):
     current_nodes: t.List[TreeNode] = root_nodes
 
     logger.info("[+] Beginning TAP ...")
+    iters_metric = Counter('parley_iters_total', 'the number of thought iterations completed')
+    nodes_metric = Gauge('parley_tot_nodes', 'the number of nodes in the thought tree')
     for iteration in range(args.depth):
+        iters_metric.inc()  
         logger.info(f" |- Iteration {iteration + 1} with {len(current_nodes)} nodes ...")
 
         for i, node in enumerate(current_nodes):
@@ -247,23 +250,27 @@ def main(args: argparse.Namespace):
                         Message(role=Role.user, content=prompt),
                     ]
                 ).content
-
-                child.score = score(
+                
+                if(child.response.startswith("I'm sorry")):
+                    child.score = 0
+                else:
+                    child.score = score(
                     scoring_system_prompt,
                     evaluator_chat,
                     child.feedback.prompt,
                     child.response,
-                )
+                    )
+                
 
                 logger.info(f'   |- Response:    "{child.response}"')
                 logger.info(f"   |- Score:       {child.score}")
                 
                 if child.score >= args.stop_score:
-                    logger.info()
+                    logger.info("")
                     logger.info("[+] Found a good attack!")
                     logger.info(f" |- Prompt: {child.feedback.prompt}")
                     logger.info(f" |- Response: {child.response}")
-                    logger.info()
+                    logger.info("")
                     return
 
         # 4 - Prune the tree and step down
@@ -278,6 +285,8 @@ def main(args: argparse.Namespace):
 
         current_nodes = children[: args.width]
 
+        nodes_metric.set(len(current_nodes))
+
         if len(current_nodes) == 0:
             logger.info()
             logger.info("[!] No more nodes to explore")
@@ -285,6 +294,10 @@ def main(args: argparse.Namespace):
             return
 
 if __name__ == "__main__":
+    start_http_server(8000)
+
+    logger = configure_logger()
+
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
@@ -325,7 +338,7 @@ if __name__ == "__main__":
         default=3,
         help="Tree of thought branching factor",
     )
-    parser.add_argument("--width", type=int, default=10, help="Tree of thought width")
+    parser.add_argument("--width", type=int, default=20, help="Tree of thought width")
     parser.add_argument("--depth", type=int, default=10, help="Tree of thought depth")
 
     # Misc
@@ -335,4 +348,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
-    logger.info()
+    logger.info("")
