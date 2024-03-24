@@ -36,5 +36,5 @@ class Parameters(BaseModel):
     top_p: float = 0.9
 
 
-ChatFunction = t.Callable[[t.List[Message]], Message]
+ChatFunction = t.Callable[[t.List[Message]], t.Awaitable[Message]]
 Conversation = t.List[Message]

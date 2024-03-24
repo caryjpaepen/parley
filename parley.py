@@ -1,12 +1,19 @@
-#!/usr/bin/env python3
-"""
-Parley: A Tree of Attacks (TAP) LLM Jailbreaking Implementation
-"""
 import argparse
 import copy
 import functools
 import typing as t
 import re
+from logger import configure_logger
+import logging
+from prometheus_client import start_http_server, Counter, Gauge
+import asyncio
+import time
+from models import chat_openai
+
+#!/usr/bin/env python3
+"""
+Parley: A Tree of Attacks (TAP) LLM Jailbreaking Implementation
+"""
 
 from _types import (
     ChatFunction,
@@ -17,7 +24,6 @@ from _types import (
     Feedback,
     TreeNode,
 )
-from models import chat_mistral, chat_openai, chat_together
 from prompts import (
     get_prompt_for_evaluator_score,
     get_prompt_for_evaluator_on_topic,
@@ -27,14 +33,7 @@ from prompts import (
 
 Models: t.Dict[str, t.Tuple] = {
     "gpt-3.5": (chat_openai, "gpt-3.5-turbo"),
-    "gpt-4": (chat_openai, "gpt-4"),
-    "gpt-4-turbo": (chat_openai, "gpt-4-1106-preview"),
-    "llama-13b": (chat_together, "togethercomputer/llama-2-13b-chat"),
-    "llama-70b": (chat_together, "togethercomputer/llama-2-70b-chat"),
-    "vicuna-13b": (chat_together, "lmsys/vicuna-13b-v1.5"),
-    "mistral-small-together": (chat_together, "mistralai/Mixtral-8x7B-Instruct-v0.1"),
-    "mistral-small": (chat_mistral, "mistral-small"),
-    "mistral-medium": (chat_mistral, "mistral-medium"),
+    "gpt-4": (chat_openai, "gpt-4-0125-preview")
 }
 
 
@@ -97,8 +96,8 @@ def cosine_similarity(l1: t.List[float], l2: t.List[float]) -> float:
 
     return similarity
 
-def score(system_prompt: str, chat: ChatFunction, prompt: str, response: str) -> int:
-    score_str = chat(
+async def score(system_prompt: str, chat: ChatFunction, prompt: str, response: str) -> int:
+    score_str = (await chat(
         [
             Message(role=Role.system, content=system_prompt),
             Message(
@@ -106,31 +105,31 @@ def score(system_prompt: str, chat: ChatFunction, prompt: str, response: str) ->
                 content=f"Prompt (P): {prompt}\nResponse (R): {response}",
             ),
         ]
-    ).content
+    )).content
 
     match = re.search(r"(\d+)", score_str)
     assert match is not None, f"Could not parse score from response: {score_str}"
     return int(match.string)
 
 
-def check_on_topic(system_prompt: str, chat: ChatFunction, content: str) -> bool:
-    on_topic_str = chat(
+async def check_on_topic(system_prompt: str, chat: ChatFunction, content: str) -> bool:
+    on_topic_str = (await chat(
         [
             Message(role=Role.system, content=system_prompt),
             Message(role=Role.user, content=content),
         ]
-    ).content
+    )).content
 
     match = re.search(r"(yes|no)", on_topic_str.lower())
     assert match is not None, f"Could not parse yes/no from response: {on_topic_str}"
     return True if match.string == "yes" else False
 
 
-def attack(
+async def attack(
     chat: ChatFunction,
     conversation: Conversation,
 ) -> t.Optional[Feedback]:
-    next_response = chat(conversation)
+    next_response = await chat(conversation)
 
     match = re.search(r"\{.*?\}", next_response.content, re.DOTALL)
     assert (
@@ -143,7 +142,10 @@ def attack(
         return None
 
 
-def main(args: argparse.Namespace):
+async def main(args: argparse.Namespace):
+
+    logger = logging.getLogger("parley")
+
     target_chat, evaluator_chat, attacker_chat = load_models(args)
     print("[+] Loaded models")
 
@@ -193,7 +195,7 @@ def main(args: argparse.Namespace):
             # 2 - Branch out
 
             for _ in range(args.branching_factor):
-                feedback = attack(attacker_chat, node.conversation)
+                feedback = await attack(attacker_chat, node.conversation)
                 if feedback is None:
                     print("  |> Attack generation failed")
                     continue
@@ -223,7 +225,7 @@ def main(args: argparse.Namespace):
                 print(f'   |- Improvement: "{child.feedback.improvement[:100]}"')
                 print(f'   |- Prompt:      "{child.feedback.prompt[:100]}"')
 
-                child.on_topic = check_on_topic(
+                child.on_topic = await check_on_topic(
                     on_topic_system_prompt, evaluator_chat, child.feedback.prompt
                 )
                 if not child.on_topic:
@@ -235,14 +237,17 @@ def main(args: argparse.Namespace):
                 # Add any additional prompt alterations here
                 prompt = child.feedback.prompt
 
-                child.response = target_chat(
+                child.response = (await target_chat(
                     [
                         Message(role=Role.system, content=target_system_prompt),
                         Message(role=Role.user, content=prompt),
                     ]
-                ).content
-
-                child.score = score(
+                )).content
+                
+                if(child.response.startswith("I'm sorry")):
+                    child.score = 0
+                else:
+                    child.score = await score(
                     scoring_system_prompt,
                     evaluator_chat,
                     child.feedback.prompt,
@@ -329,5 +334,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    main(args)
-    print()
+    asyncio.run(main(args))
