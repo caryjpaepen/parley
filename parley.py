@@ -147,7 +147,7 @@ async def main(args: argparse.Namespace):
     logger = logging.getLogger("parley")
 
     target_chat, evaluator_chat, attacker_chat = load_models(args)
-    print("[+] Loaded models")
+    logger.info("[+] Loaded models")
 
     attacker_system_prompt = get_prompt_for_attacker(args.goal)
     scoring_system_prompt = get_prompt_for_evaluator_score(args.goal)
@@ -168,15 +168,18 @@ async def main(args: argparse.Namespace):
 
     current_nodes: t.List[TreeNode] = root_nodes
 
-    print("[+] Beginning TAP ...")
+    logger.info("[+] Beginning TAP ...")
+    iters_metric = Counter('parley_iters_total', 'the number of thought iterations completed')
+    nodes_metric = Gauge('parley_tot_nodes', 'the number of nodes in the thought tree')
     for iteration in range(args.depth):
-        print(f" |- Iteration {iteration + 1} with {len(current_nodes)} nodes ...")
+        iters_metric.inc()  
+        logger.info(f" |- Iteration {iteration + 1} with {len(current_nodes)} nodes ...")
 
         for i, node in enumerate(current_nodes):
             # 1 - Prepare the next conversation step
 
             response_str = (
-                f"{node.response[:300]}..."
+                f"{node.response[:1000]}..."
                 if node.response is not None
                 else "[Ignore, this is your first attempt]"
             )
@@ -197,7 +200,7 @@ async def main(args: argparse.Namespace):
             for _ in range(args.branching_factor):
                 feedback = await attack(attacker_chat, node.conversation)
                 if feedback is None:
-                    print("  |> Attack generation failed")
+                    logger.info("  |> Attack generation failed")
                     continue
 
                 conversation = copy.deepcopy(node.conversation)
@@ -221,18 +224,18 @@ async def main(args: argparse.Namespace):
             for k, child in enumerate(node.children):
                 assert child.feedback is not None
 
-                print(f"  |= {iteration + 1}->{i + 1}->{k + 1}")
-                print(f'   |- Improvement: "{child.feedback.improvement[:100]}"')
-                print(f'   |- Prompt:      "{child.feedback.prompt[:100]}"')
+                logger.info(f"  |= {iteration + 1}->{i + 1}->{k + 1}")
+                logger.info(f'   |- Improvement: "{child.feedback.improvement}"')
+                logger.info(f'   |- Prompt:      "{child.feedback.prompt}"')
 
                 child.on_topic = await check_on_topic(
                     on_topic_system_prompt, evaluator_chat, child.feedback.prompt
                 )
                 if not child.on_topic:
-                    print("   |- Off topic.")
+                    logger.info("   |- Off topic.")
                     continue
 
-                print("   |- ON topic ...")
+                logger.info("   |- ON topic ...")
 
                 # Add any additional prompt alterations here
                 prompt = child.feedback.prompt
@@ -252,17 +255,18 @@ async def main(args: argparse.Namespace):
                     evaluator_chat,
                     child.feedback.prompt,
                     child.response,
-                )
+                    )
+                
 
-                print(f'   |- Response:    "{child.response[:100]}"')
-                print(f"   |- Score:       {child.score}")
+                logger.info(f'   |- Response:    "{child.response}"')
+                logger.info(f"   |- Score:       {child.score}")
                 
                 if child.score >= args.stop_score:
-                    print()
-                    print("[+] Found a good attack!")
-                    print(f" |- Prompt: {child.feedback.prompt}")
-                    print(f" |- Response: {child.response}")
-                    print()
+                    logger.info("")
+                    logger.info("[+] Found a good attack!")
+                    logger.info(f" |- Prompt: {child.feedback.prompt}")
+                    logger.info(f" |- Response: {child.response}")
+                    logger.info("")
                     return
 
         # 4 - Prune the tree and step down
@@ -277,14 +281,19 @@ async def main(args: argparse.Namespace):
 
         current_nodes = children[: args.width]
 
+        nodes_metric.set(len(current_nodes))
+
         if len(current_nodes) == 0:
-            print()
-            print("[!] No more nodes to explore")
-            print()
+            logger.info()
+            logger.info("[!] No more nodes to explore")
+            logger.info()
             return
 
-
 if __name__ == "__main__":
+    start_http_server(8000)
+
+    logger = configure_logger()
+
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
@@ -325,7 +334,7 @@ if __name__ == "__main__":
         default=3,
         help="Tree of thought branching factor",
     )
-    parser.add_argument("--width", type=int, default=10, help="Tree of thought width")
+    parser.add_argument("--width", type=int, default=20, help="Tree of thought width")
     parser.add_argument("--depth", type=int, default=10, help="Tree of thought depth")
 
     # Misc
